@@ -354,6 +354,7 @@
     <button class="btn btn-outline" id="btn-export-day">Download today as Excel</button>
     <button class="btn btn-outline" id="btn-export-log">Download full log (Excel)</button>
     <button class="btn btn-outline" id="btn-sync-onedrive">Sync to OneDrive</button>
+    <button class="btn btn-outline" id="btn-load-onedrive">Load from OneDrive</button>
     <button class="btn btn-outline" id="btn-download-pdf">Download PDF</button>
     <select class="history-select" id="history-select">
       <option value="">Browse past reports…</option>
@@ -743,6 +744,81 @@ document.getElementById('btn-download-pdf').addEventListener('click', () => {
 
 document.getElementById('btn-save').addEventListener('click', () => saveReport(true));
 
+/* ---------------- Load from OneDrive (pulls a day's data back from the workbook) ---------------- */
+// Replace this once the "Get Day Report" flow is built and its HTTP URL is available.
+const LOAD_ONEDRIVE_URL = "REPLACE_ME_WITH_LOAD_FLOW_URL";
+
+// Maps each Excel table's column names back to this app's internal field names.
+const EXCEL_COLUMN_MAP = {
+  teachers: { Teacher:'teacher', Instrument:'instrument', Status:'status', InOutTime:'time' },
+  studentAttendance: { Instrument:'instrument', ClassesHeld:'classesHeld', StudentsPresent:'studentsPresent' },
+  absences: { Student:'student', InstrumentTeacher:'instrumentTeacher', Informed:'informed', Reason:'reason', FollowedUp:'followedUp', Remarks:'remarks' },
+  fees: { Student:'student', Instrument:'instrument', Teacher:'teacher', Mode:'mode', Amount:'amount' },
+  dues: { Student:'student', InstrumentTeacher:'instrumentTeacher', AmountCleared:'amount' },
+  outstanding: { Student:'student', InstrumentTeacher:'instrumentTeacher', Due:'due', FollowUpStatus:'followUpStatus' },
+  admissions: { Student:'student', Instrument:'instrument', Teacher:'teacher', FeePaid:'feePaid' },
+  visitors: { Visitor:'visitor', Contact:'contact', InterestedIn:'interestedIn', FollowUp:'followUp' },
+};
+
+function convertExcelRow(excelRow, columnMap){
+  const out = {};
+  for(const [excelKey, internalKey] of Object.entries(columnMap)){
+    out[internalKey] = excelRow[excelKey] ?? '';
+  }
+  return out;
+}
+
+document.getElementById('btn-load-onedrive').addEventListener('click', async () => {
+  if(LOAD_ONEDRIVE_URL.startsWith('REPLACE_ME')){
+    alert('The "Load from OneDrive" flow hasn\'t been connected yet — this needs a Power Automate URL set up first.');
+    return;
+  }
+  const proceed = confirm(
+    `This will replace what's currently shown for ${STATE.date} with whatever is saved in your OneDrive workbook for that date.\n\n` +
+    `Any unsaved local changes for this date will be lost. Continue?`
+  );
+  if(!proceed) return;
+
+  const btn = document.getElementById('btn-load-onedrive');
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Loading…';
+  try{
+    const res = await fetch(LOAD_ONEDRIVE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date: STATE.date })
+    });
+    if(!res.ok){
+      let detail = '';
+      try{ detail = await res.text(); }catch(e){}
+      throw new Error('HTTP ' + res.status + (detail ? ' — ' + detail.slice(0,300) : ''));
+    }
+    const data = await res.json();
+
+    const newState = blankState(STATE.date);
+    Object.keys(EXCEL_COLUMN_MAP).forEach(key => {
+      const rows = (data[key] || []).map(r => convertExcelRow(r, EXCEL_COLUMN_MAP[key]));
+      newState[key] = rows.length ? rows : [blankRow(key)];
+    });
+    const summaryRow = (data.summary && data.summary[0]) || data.summary || {};
+    newState.notes = summaryRow.Notes || '';
+    newState.receptionSign = summaryRow.ReceptionSign || '';
+    newState.managementSign = summaryRow.ManagementSign || '';
+    newState.preparedBy = summaryRow.PreparedBy || '';
+    newState.weather = summaryRow.Weather || '';
+
+    STATE = newState;
+    renderAll();
+    await saveReport(true);
+    btn.textContent = 'Loaded ✓';
+  }catch(e){
+    console.error('Load from OneDrive failed:', e);
+    alert('Could not load from OneDrive:\n\n' + e.message);
+    btn.textContent = 'Load failed';
+  }
+  setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2500);
+});
+
 /* ---------------- Excel export: today's report ---------------- */
 function buildDaySheets(state){
   const wb = XLSX.utils.book_new();
@@ -1089,6 +1165,8 @@ function buildOneDrivePayload(state){
       notes: state.notes || '',
       receptionSign: state.receptionSign || '',
       managementSign: state.managementSign || '',
+      preparedBy: state.preparedBy || '',
+      weather: state.weather || '',
     }
   };
 }
